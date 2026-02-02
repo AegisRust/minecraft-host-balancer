@@ -1,0 +1,16 @@
+bind = "0.0.0.0:25566"
+timeout = 10
+receive_ppv2 = false
+
+[manager]
+enable = false
+host = "m.example.com:9012"
+key = "strong_key"
+tag = "server1"
+
+[[servers]]
+hostname = "localhost"
+ppv2 = false
+backends = [
+    "127.0.0.1:25565",
+]
