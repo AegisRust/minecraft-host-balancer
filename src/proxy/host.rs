@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::AddrParseError, sync::Arc};
+use std::{collections::HashMap, io, sync::Arc};
 
 use crate::{
     config::ServerConfig,
@@ -12,7 +12,7 @@ pub struct HostManager {
 pub type SmartHostManager = Arc<HostManager>;
 
 impl HostManager {
-    pub fn new(servers: Vec<ServerConfig>) -> Result<Self, AddrParseError> {
+    pub fn new(servers: Vec<ServerConfig>) -> io::Result<Self> {
         let mut server_map = HashMap::new();
 
         for server in servers {

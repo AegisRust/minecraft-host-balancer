@@ -1,7 +1,5 @@
 use std::{
-    net::{AddrParseError, SocketAddr},
-    ops::Deref,
-    sync::atomic::{AtomicUsize, Ordering},
+    io, net::{SocketAddr, ToSocketAddrs}, ops::Deref, sync::atomic::{AtomicUsize, Ordering}
 };
 
 pub struct Balancer {
@@ -11,11 +9,11 @@ pub struct Balancer {
 }
 
 impl Balancer {
-    pub fn new(ppv2: bool, backends: Vec<String>) -> Result<Self, AddrParseError> {
+    pub fn new(ppv2: bool, backends: Vec<String>) -> io::Result<Self> {
         let mut addrs = Vec::new();
         for backend in backends {
-            let addr = backend.parse()?;
-            addrs.push(addr);
+            let addr = backend.to_socket_addrs()?;
+            addrs.extend(addr);
         }
 
         Ok(Self {
