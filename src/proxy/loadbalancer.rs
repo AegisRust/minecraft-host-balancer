@@ -1,16 +1,47 @@
 use std::{
-    io, net::{SocketAddr, ToSocketAddrs}, ops::Deref, sync::atomic::{AtomicUsize, Ordering}
+    collections::HashMap,
+    io,
+    net::{SocketAddr, ToSocketAddrs},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
+
+use crate::config::ServerConfig;
+
+use super::types::ServerName;
+
+pub struct LoadBalancer {
+    server_map: HashMap<ServerName, Balancer>,
+}
+
+impl LoadBalancer {
+    pub fn new(servers: Box<[ServerConfig]>) -> io::Result<Arc<Self>> {
+        let mut server_map = HashMap::new();
+
+        for server in servers {
+            let balancer = Balancer::new(server.ppv2, server.backends)?;
+            server_map.insert(ServerName::new(server.hostname), balancer);
+        }
+
+        Ok(Arc::new(Self { server_map }))
+    }
+
+    pub fn get_host(self: &Arc<Self>, host: &ServerName) -> Option<&SocketAddr> {
+        self.server_map.get(host).and_then(Balancer::take)
+    }
+}
 
 pub struct Balancer {
     ppv2: bool,
-    backends: Vec<SocketAddr>,
+    backends: Box<[SocketAddr]>,
     count: AtomicUsize,
 }
 
 impl Balancer {
-    pub fn new(ppv2: bool, backends: Vec<String>) -> io::Result<Self> {
-        let mut addrs = Vec::new();
+    pub fn new(ppv2: bool, backends: Box<[String]>) -> io::Result<Self> {
+        let mut addrs = Vec::with_capacity(backends.len());
         for backend in backends {
             let addr = backend.to_socket_addrs()?;
             addrs.extend(addr);
@@ -18,50 +49,18 @@ impl Balancer {
 
         Ok(Self {
             ppv2,
-            backends: addrs,
+            backends: addrs.into_boxed_slice(),
             count: AtomicUsize::new(0),
         })
     }
 
+    #[allow(dead_code)]
     pub fn is_ppv2(&self) -> bool {
         self.ppv2
     }
 
     pub fn take(&self) -> Option<&SocketAddr> {
-        let server = self
-            .backends
-            .get(self.count.load(Ordering::Relaxed) % self.backends.len());
-        self.count.fetch_add(1, Ordering::Relaxed);
-        server
-    }
-
-    pub fn release(&self) {
-        let _ = self
-            .count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
-                if x > 0 { Some(x - 1) } else { None }
-            });
-    }
-}
-
-pub struct GuardBalancer<'a>(&'a Balancer);
-
-impl<'a> GuardBalancer<'a> {
-    pub fn new(inner: &'a Balancer) -> Self {
-        Self(inner)
-    }
-}
-
-impl<'a> Drop for GuardBalancer<'a> {
-    fn drop(&mut self) {
-        self.0.release();
-    }
-}
-
-impl<'a> Deref for GuardBalancer<'a> {
-    type Target = Balancer;
-
-    fn deref(&self) -> &Self::Target {
-        self.0
+        self.backends
+            .get(self.count.fetch_add(1, Ordering::Relaxed) % self.backends.len())
     }
 }

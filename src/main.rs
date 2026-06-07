@@ -4,9 +4,7 @@ use crate::{config::Config, proxy::Application};
 
 mod config;
 mod mc;
-mod mem;
 mod proxy;
-mod util;
 
 const CONFIG_PATH: &str = "./config.toml";
 
@@ -19,8 +17,12 @@ async fn main() {
         Err(e) => panic!("{}", e),
     };
 
-    let proxy_manager = Application::new();
-    if let Err(e) = proxy_manager.run(config).await {
+    let proxy_manager = match Application::new(config) {
+        Ok(p) => p,
+        Err(e) => panic!("{}", e),
+    };
+
+    if let Err(e) = proxy_manager.run().await {
         error!("{}", e);
     }
 }

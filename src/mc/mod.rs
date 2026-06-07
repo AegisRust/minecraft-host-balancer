@@ -1,8 +1,6 @@
 use tokio::io;
 use tokio_util::bytes::{Buf, Bytes};
 
-pub mod handshake;
-
 fn read_varint(src: &mut Bytes) -> io::Result<i32> {
     let mut value = 0;
     let mut position = 0;
@@ -33,7 +31,7 @@ fn read_varint(src: &mut Bytes) -> io::Result<i32> {
     Ok(value)
 }
 
-fn read_string(src: &mut Bytes) -> io::Result<String> {
+fn read_string_bytes(src: &mut Bytes) -> io::Result<Bytes> {
     let len = read_varint(src)? as usize;
 
     if src.remaining() < len {
@@ -44,7 +42,27 @@ fn read_string(src: &mut Bytes) -> io::Result<String> {
     }
 
     let string_bytes = src.copy_to_bytes(len);
+    Ok(string_bytes)
+}
 
-    String::from_utf8(string_bytes.to_vec())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))
+pub fn parse_server_name(mut buf: Bytes) -> Option<Bytes> {
+    let Ok(packet_len) = read_varint(&mut buf) else {
+        return None;
+    };
+
+    if packet_len < 0 {
+        return None;
+    }
+
+    let Ok(packet_id) = read_varint(&mut buf) else {
+        return None;
+    };
+
+    if packet_id != 0x00 {
+        return None;
+    }
+
+    read_varint(&mut buf).ok()?; //skip protocol version
+
+    read_string_bytes(&mut buf).ok()
 }

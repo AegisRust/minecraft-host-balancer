@@ -1,105 +1,109 @@
 use std::{sync::Arc, time::Duration};
 
+use loadbalancer::LoadBalancer;
+use stream::ProxyStream;
 use tokio::{
-    io::{self, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    io,
+    net::TcpListener,
     select,
     signal::unix::{SignalKind, signal},
+    sync::OnceCell,
     task::JoinSet,
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use crate::{
-    config::Config,
-    mem::SmartBufferAllocator,
-    proxy::{
-        host::{HostManager, SmartHostManager},
-        proxy_processor::ProxyProcessor,
-    },
-};
+use crate::config::Config;
 
-mod host;
 mod loadbalancer;
-mod proxy_processor;
+mod stream;
+pub mod types;
 
-const BUFFER_CAPA: usize = 0xFFFF;
-
-pub struct Application;
+pub struct Application {
+    bind: String,
+    timeout: Duration,
+    token: CancellationToken,
+    loadbalancer: Arc<LoadBalancer>,
+    listener: OnceCell<TcpListener>,
+}
 
 impl Application {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(config: Config) -> io::Result<Self> {
+        let loadbalancer = LoadBalancer::new(config.servers)?;
+        Ok(Self {
+            bind: config.bind,
+            timeout: Duration::from_secs(config.timeout),
+            token: CancellationToken::default(),
+            loadbalancer,
+            listener: OnceCell::new(),
+        })
     }
+}
 
-    pub async fn run(&self, config: Config) -> io::Result<()> {
-        let listener = TcpListener::bind(&config.bind).await?;
-        let cancel = CancellationToken::new();
-        let host_manager = HostManager::new(config.servers).map_err(io::Error::other)?;
-        let host_manager = Arc::new(host_manager);
-        let buffer_allocator = SmartBufferAllocator::new(6, BUFFER_CAPA);
+impl Application {
+    pub async fn run(&self) -> io::Result<()> {
         let mut tasks = JoinSet::new();
-
-        info!("proxy server listen on {}", &config.bind);
 
         loop {
             select! {
-                _ = self.waiting_signal() => {
-                    info!("shutdown...");
-                    cancel.cancel();
-                    break;
-                },
+                res = self.proxy_task(&mut tasks) => {
+                    res?;
+                }
 
-                res = listener.accept() => {
-                    let (client_stream, _) = res?;
-                    let cancel = cancel.clone();
-                    let manager = Arc::clone(&host_manager);
-                    let buffer_allocator = buffer_allocator.clone();
-                    tasks.spawn(Self::handle_proxy(config.receive_ppv2, client_stream, config.timeout, cancel, manager, buffer_allocator));
+                _ = self.wait_signal_task() => {
+                    info!("shutdown...");
+                    self.token.cancel();
+                    break;
                 }
             }
         }
 
-        let _ = timeout(Duration::from_secs(config.timeout), async {
-            while tasks.join_next().await.is_some() {}
+        info!("Waiting for all tasks to finish.");
+        let _ = timeout(self.timeout, async {
+            while let Some(res) = tasks.join_next().await {
+                match res {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => error!("packet processer error: {}", e),
+                    Err(e) => error!("thread task error: {}", e),
+                }
+            }
         })
         .await;
+
+        info!("Good Bye!!");
 
         Ok(())
     }
 
-    async fn waiting_signal(&self) -> io::Result<()> {
+    async fn proxy_task(&self, tasks: &mut JoinSet<io::Result<()>>) -> io::Result<()> {
+        let listener = self
+            .listener
+            .get_or_try_init(|| async { TcpListener::bind(&self.bind).await })
+            .await?;
+
+        info!("proxy starting {}", self.bind);
+
+        let (stream, _addr) = listener.accept().await?;
+        let proxy_stream = ProxyStream::new(
+            stream,
+            self.timeout,
+            self.token.clone(),
+            self.loadbalancer.clone(),
+        )?;
+
+        tasks.spawn(async move { proxy_stream.run_proxy().await });
+
+        Ok(())
+    }
+
+    async fn wait_signal_task(&self) -> io::Result<()> {
         let mut sigterm = signal(SignalKind::terminate())?;
         let mut sigint = signal(SignalKind::interrupt())?;
 
         tokio::select! {
             _ = sigterm.recv() => Ok(()),
             _ = sigint.recv() => Ok(()),
-        }
-    }
-
-    async fn handle_proxy(
-        receive_ppv2: bool,
-        mut client_stream: TcpStream,
-        timeout_sec: u64,
-        cancel: CancellationToken,
-        host_manager: SmartHostManager,
-        buffer_allocator: SmartBufferAllocator,
-    ) {
-        let processor = ProxyProcessor::new(
-            receive_ppv2,
-            timeout_sec,
-            cancel,
-            host_manager,
-            buffer_allocator,
-        );
-        if let Err(e) = processor.process(&mut client_stream).await {
-            error!("{}", e);
-        }
-
-        if let Err(e) = client_stream.shutdown().await {
-            error!("{}", e);
         }
     }
 }
