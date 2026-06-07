@@ -7,6 +7,7 @@ use tokio::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
     select,
+    time::timeout,
 };
 use tokio_util::{
     bytes::{Buf, Bytes, BytesMut},
@@ -23,6 +24,7 @@ pub struct ProxyStream {
     cancel: CancellationToken,
     loadbalancer: Arc<LoadBalancer>,
     stream: TcpStream,
+    timeout: Duration,
 }
 
 impl ProxyStream {
@@ -36,8 +38,9 @@ impl ProxyStream {
 
         Ok(ProxyStream {
             cancel,
-            stream,
             loadbalancer,
+            stream,
+            timeout,
         })
     }
 
@@ -59,7 +62,7 @@ impl ProxyStream {
             return Err(io::Error::other("upstream peer parse failed."));
         };
 
-        let mut to_stream = TcpStream::connect(peer).await?;
+        let mut to_stream = timeout(self.timeout, TcpStream::connect(peer)).await??;
         to_stream.set_nodelay(true)?;
 
         while c2s.has_remaining() {
