@@ -79,10 +79,11 @@ impl Application {
     async fn proxy_task(&self, tasks: &mut JoinSet<io::Result<()>>) -> io::Result<()> {
         let listener = self
             .listener
-            .get_or_try_init(|| async { TcpListener::bind(&self.bind).await })
+            .get_or_try_init(|| async {
+                info!("proxy starting {}", self.bind);
+                TcpListener::bind(&self.bind).await
+            })
             .await?;
-
-        info!("proxy starting {}", self.bind);
 
         let (stream, _addr) = listener.accept().await?;
         let proxy_stream = ProxyStream::new(
