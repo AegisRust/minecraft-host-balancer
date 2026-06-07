@@ -8,7 +8,7 @@ pub struct Config {
     pub timeout: u64,
     pub receive_ppv2: bool,
     pub manager: ManagerConfig,
-    pub servers: Vec<ServerConfig>,
+    pub servers: Box<[ServerConfig]>,
 }
 
 impl Default for Config {
@@ -18,7 +18,7 @@ impl Default for Config {
             timeout: 10,
             receive_ppv2: false,
             manager: ManagerConfig::default(),
-            servers: vec![ServerConfig::default()],
+            servers: Box::new([ServerConfig::default()]),
         }
     }
 }
@@ -73,7 +73,7 @@ impl Default for ManagerConfig {
 pub struct ServerConfig {
     pub hostname: String,
     pub ppv2: bool,
-    pub backends: Vec<String>,
+    pub backends: Box<[String]>,
 }
 
 impl Default for ServerConfig {
@@ -81,7 +81,8 @@ impl Default for ServerConfig {
         Self {
             hostname: "mc.example.com".to_string(),
             ppv2: false,
-            backends: vec!["10.0.0.1:25565".to_string(), "10.0.0.2:25565".to_string()],
+            backends: vec!["10.0.0.1:25565".to_string(), "10.0.0.2:25565".to_string()]
+                .into_boxed_slice(),
         }
     }
 }
